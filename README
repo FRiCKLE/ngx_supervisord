@@ -59,6 +59,13 @@ $ ./configure --add-module=/path/to/ngx_supervisord
 $ make && make install
 
 
+CONFIGURATION NOTES:
+--------------------
+Since ngx_supervisord-1.2 you cannot set "worker_connections" to 512,
+it can be set to either lower or higher number, just not equal to 512.
+For details please check CHANGES log and/or source code.
+
+
 CONFIGURATION DIRECTIVES:
 -------------------------
 supervisord path [user:pass] (context: upstream)

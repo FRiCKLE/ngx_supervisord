@@ -1,3 +1,16 @@
+2009-11-19    VERSION 1.2
+    * Don't run "monitors" on "cache manager" and "cache loader"
+      processes (this could lead to crash of either of them 
+      when ngx_supervisord-enable load balancer tried to access
+      data available only on "worker" processes).
+
+      NOTE: This modification uses undocumented nginx's "feature"
+      to distinguish mentioned processes and starting from this
+      release "worker_connections" cannot be set to 512 (it can be
+      set to either lower or higher number, just not equal to 512).
+
+    * patches: Workaround possible bug in nginx-upstream-fair.
+
 2009-11-16    VERSION 1.1
     * Add "supervisord_name" directive (which overrides
       upstream{}'s name when communicating with supervisord).

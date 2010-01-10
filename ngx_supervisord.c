@@ -386,6 +386,18 @@ ngx_supervisord_worker_init(ngx_cycle_t *cycle)
 {
     ngx_connection_t  *dummy;
 
+    /*
+     * This is really cheap hack, but it's the only way
+     * to distinguish "workers" from "cache manager"
+     * and "cache loader" without additional patch.
+     *
+     * NOTE: "worker_connections" cannot be set to 512!
+     */
+    if (cycle->connection_n == 512) {
+        /* work only on real worker processes */
+        return NGX_OK;
+    }
+
     if (ngx_supervisord_upstreams->nelts == 0) {
         /* nothing to do */
         return NGX_OK;
@@ -704,7 +716,7 @@ ngx_supervisord_cmd_checker(ngx_event_t *ev)
                   "[supervisord] upstream: %V, executing checker...",
                   &qcmd->uscf->host);
     rc = qcmd->checker(qcmd->uscf, qcmd->backend);
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, ngx_cycle->log, 0,
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, ngx_cycle->log, 0,
                   "[supervisord] upstream: %V, checker rc: %i",
                   &qcmd->uscf->host, rc);
 
@@ -843,7 +855,7 @@ ngx_supervisord_execute(ngx_http_upstream_srv_conf_t *uscf,
                       "[supervisord] upstream: %V, executing checker...",
                       &uscf->host);
         rc = checker(uscf, (ngx_uint_t) backend);
-        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, ngx_cycle->log, 0,
+        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, ngx_cycle->log, 0,
                       "[supervisord] upstream: %V, checker rc: %i",
                       &uscf->host, rc);
 

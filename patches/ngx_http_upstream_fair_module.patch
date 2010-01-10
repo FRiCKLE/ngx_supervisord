@@ -1,5 +1,5 @@
---- ngx_http_upstream_fair_module.c.orig	Wed Sep 23 19:28:58 2009
-+++ ngx_http_upstream_fair_module.c	Wed Oct 28 17:25:17 2009
+--- ngx_http_upstream_fair_module.c.orig	Thu Nov 19 03:36:25 2009
++++ ngx_http_upstream_fair_module.c	Thu Nov 19 03:37:42 2009
 @@ -8,8 +8,18 @@
  #include <ngx_config.h>
  #include <ngx_core.h>
@@ -19,7 +19,7 @@
      ngx_uint_t                          nreq;
      ngx_uint_t                          total_req;
      ngx_uint_t                          last_req_id;
-@@ -37,6 +47,7 @@ typedef struct {
+@@ -37,6 +47,7 @@
      struct sockaddr                    *sockaddr;
      socklen_t                           socklen;
      ngx_str_t                           name;
@@ -27,7 +27,7 @@
  
      ngx_uint_t                          weight;
      ngx_uint_t                          max_fails;
-@@ -97,6 +108,12 @@ static char *ngx_http_upstream_fair_set_shm_size(ngx_c
+@@ -97,6 +108,12 @@
      ngx_command_t *cmd, void *conf);
  static ngx_int_t ngx_http_upstream_fair_init_module(ngx_cycle_t *cycle);
  
@@ -40,7 +40,7 @@
  #if (NGX_HTTP_EXTENDED_STATUS)
  static ngx_chain_t *ngx_http_upstream_fair_report_status(ngx_http_request_t *r,
      ngx_int_t *length);
-@@ -125,6 +142,20 @@ static ngx_command_t  ngx_http_upstream_fair_commands[
+@@ -125,6 +142,20 @@
        0,
        NULL },
  
@@ -61,7 +61,7 @@
        ngx_null_command
  };
  
-@@ -136,7 +167,7 @@ static ngx_http_module_t  ngx_http_upstream_fair_modul
+@@ -136,7 +167,7 @@
      NULL,                                  /* create main configuration */
      NULL,                                  /* init main configuration */
  
@@ -70,7 +70,7 @@
      NULL,                                  /* merge server configuration */
  
      NULL,                                  /* create location configuration */
-@@ -371,8 +402,95 @@ ngx_http_upstream_fair_set_shm_size(ngx_conf_t *cf, ng
+@@ -371,8 +402,95 @@
      return NGX_CONF_OK;
  }
  
@@ -166,7 +166,7 @@
  ngx_http_upstream_fair(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
  {
      ngx_http_upstream_srv_conf_t  *uscf;
-@@ -474,6 +592,7 @@ ngx_http_upstream_init_fair_rr(ngx_conf_t *cf, ngx_htt
+@@ -474,6 +592,7 @@
                  peers->peer[n].fail_timeout = server[i].fail_timeout;
                  peers->peer[n].down = server[i].down;
                  peers->peer[n].weight = server[i].down ? 0 : server[i].weight;
@@ -174,7 +174,7 @@
                  n++;
              }
          }
-@@ -524,6 +643,7 @@ ngx_http_upstream_init_fair_rr(ngx_conf_t *cf, ngx_htt
+@@ -524,6 +643,7 @@
                  backup->peer[n].max_fails = server[i].max_fails;
                  backup->peer[n].fail_timeout = server[i].fail_timeout;
                  backup->peer[n].down = server[i].down;
@@ -182,7 +182,7 @@
                  n++;
              }
          }
-@@ -580,6 +700,7 @@ ngx_http_upstream_init_fair_rr(ngx_conf_t *cf, ngx_htt
+@@ -580,6 +700,7 @@
          peers->peer[i].weight = 1;
          peers->peer[i].max_fails = 1;
          peers->peer[i].fail_timeout = 10;
@@ -190,7 +190,7 @@
      }
  
      us->peer.data = peers;
-@@ -589,6 +710,85 @@ ngx_http_upstream_init_fair_rr(ngx_conf_t *cf, ngx_htt
+@@ -589,6 +710,89 @@
      return NGX_OK;
  }
  
@@ -203,6 +203,10 @@
 +    ngx_uint_t                       i;
 +
 +    peers = uscf->peer.data;
++    if (peers->shared == NULL) {
++        return NGX_OK;
++    }
++
 +    lock = &peers->shared->lock;
 +    ngx_spinlock(lock, ngx_pid, 1024);
 +
@@ -276,7 +280,7 @@
  static ngx_int_t
  ngx_http_upstream_init_fair(ngx_conf_t *cf, ngx_http_upstream_srv_conf_t *us)
  {
-@@ -601,6 +801,12 @@ ngx_http_upstream_init_fair(ngx_conf_t *cf, ngx_http_u
+@@ -601,6 +805,12 @@
          return NGX_ERROR;
      }
  
@@ -289,7 +293,7 @@
      /* setup our wrapper around rr */
      peers = ngx_palloc(cf->pool, sizeof *peers);
      if (peers == NULL) {
-@@ -1147,7 +1353,7 @@ ngx_http_upstream_init_fair_peer(ngx_http_request_t *r
+@@ -1147,7 +1357,7 @@
                                 ngx_http_upstream_fair_save_session;
  #endif
  
