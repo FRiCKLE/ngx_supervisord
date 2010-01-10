@@ -44,6 +44,7 @@
 void       *ngx_supervisord_create_srv_conf(ngx_conf_t *);
 ngx_int_t   ngx_supervisord_preconf(ngx_conf_t *);
 char       *ngx_supervisord_conf(ngx_conf_t *, ngx_command_t *, void *);
+char       *ngx_supervisord_conf_name(ngx_conf_t *, ngx_command_t *, void *);
 ngx_int_t   ngx_supervisord_module_init(ngx_cycle_t *);
 ngx_int_t   ngx_supervisord_worker_init(ngx_cycle_t *);
 void        ngx_supervisord_monitor(ngx_event_t *);
@@ -53,6 +54,7 @@ void        ngx_supervisord_finalize_request(ngx_http_request_t *, ngx_int_t);
 typedef struct {
     ngx_url_t                      server;
     ngx_str_t                      userpass;	/* user:pass format */
+    ngx_str_t                      name;
 } ngx_supervisord_conf_t;
 
 typedef struct {
@@ -104,6 +106,13 @@ static ngx_command_t  ngx_supervisord_module_commands[] = {
     { ngx_string("supervisord"),
       NGX_HTTP_UPS_CONF|NGX_CONF_TAKE12,
       ngx_supervisord_conf,
+      0,
+      0,
+      NULL },
+
+    { ngx_string("supervisord_name"),
+      NGX_HTTP_UPS_CONF|NGX_CONF_TAKE1,
+      ngx_supervisord_conf_name,
       0,
       0,
       NULL },
@@ -272,6 +281,26 @@ ngx_supervisord_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     }
 
     *supcfp = supcf;
+
+    return NGX_CONF_OK;
+}
+
+char *
+ngx_supervisord_conf_name(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_str_t                   *value = cf->args->elts;
+    ngx_supervisord_srv_conf_t  *supcf;
+
+    supcf = ngx_http_conf_get_module_srv_conf(cf, ngx_supervisord_module);
+
+    if (supcf->supervisord.name.data != NULL) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            "supervisord_name already set to \"%V\"", &supcf->supervisord.name);
+
+        return NGX_CONF_ERROR;
+    }
+
+    supcf->supervisord.name = value[1];
 
     return NGX_CONF_OK;
 }
@@ -1087,14 +1116,26 @@ ngx_supervisord_create_request(ngx_http_request_t *r)
         goto failed;
     }
 
-    len = uscf->host.len + int_strlen(ctx->backend) + 1;
+    if (supcf->supervisord.name.data != NULL) {
+        len = supcf->supervisord.name.len + int_strlen(ctx->backend) + 1;
+    } else {
+        len = uscf->host.len + int_strlen(ctx->backend) + 1;
+    }
+
     backend = ngx_palloc(r->pool, len);
     if (backend == NULL) {
         goto failed;
     }
 
     /* ngx_snprintf *IS NOT* snprintf compatible */
-    (void) ngx_snprintf(backend, len - 1, "%V%i", &uscf->host, ctx->backend);
+    if (supcf->supervisord.name.data != NULL) {
+        (void) ngx_snprintf(backend, len - 1, "%V%i",
+                            &supcf->supervisord.name, ctx->backend);
+    } else {
+        (void) ngx_snprintf(backend, len - 1, "%V%i",
+                            &uscf->host, ctx->backend);
+    }
+
     backend[len - 1] = '\0';
     
     ngx_log_debug3(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
@@ -1426,7 +1467,10 @@ ngx_supervisord_init(ngx_pool_t *pool, ngx_http_upstream_srv_conf_t *ouscf)
 
     r->main = r;
     r->connection = c;
+
+#if (nginx_version >= 8011)
     r->count = 1;
+#endif
 
     /* used by ngx_http_upstream_init */
     c->read = ngx_pcalloc(c->pool, sizeof(ngx_event_t));

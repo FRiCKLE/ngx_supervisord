@@ -1,0 +1,9 @@
+2009-11-16    VERSION 1.1
+    * Add "supervisord_name" directive (which overrides
+      upstream{}'s name when communicating with supervisord).
+
+2009-10-30
+    * Allow module to compile with nginx-0.7.63+ and 0.8.7+.
+
+2009-10-29    VERSION 1.0
+    * Initial release

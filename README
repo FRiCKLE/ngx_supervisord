@@ -14,7 +14,7 @@ ngx_supervisord-1.0 was fully funded by megiteam.pl.
 
 REQUIREMENTS:
 -------------
-* nginx >= 0.8.11,
+* nginx >= 0.7.63 or >= 0.8.7,
 * ngx_http_upstream_init_busy patch by Ryan Lienhart Dahl (included in patches).
 * ngx_supervisord-aware module(s).
 
@@ -63,9 +63,14 @@ CONFIGURATION DIRECTIVES:
 -------------------------
 supervisord path [user:pass] (context: upstream)
 
-path can be:
+Path to supervisord's listening socket, path can be:
 * IP:port (127.0.0.1:8000)
 * UNIX socket path (unix:/path/to/supervisord.sock)
+
+
+supervisord_name name (context: upstream)
+
+Use name instead of upstream{}'s name when communicating with supervisord.
 
 
 EXAMPLE CONFIGURATION:
