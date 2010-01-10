@@ -3,6 +3,9 @@ ABOUT:
 ngx_supervisord is a module that provides API to communicate with
 supervisord daemon (http://supervisord.org).
 
+As a "side effect", it also provides a way for dynamically
+taking backend servers out of rotation (configuration example #2).
+
 Interface is described in ngx_supervisord.h. For example of implementation
 please check patches/ngx_http_upstream_fair_module.patch.
 
@@ -24,9 +27,9 @@ INCLUDED PATCHES:
 ngx_http_upstream_fair_module.patch:
 Patch against nginx-upstream-fair load balancer by Grzegorz Nosek
 (http://github.com/gnosek/nginx-upstream-fair), which adds capabilities to:
-* start first backend,
-* start/stop backends depending on the load,
-* set number of minimum running backends.
+* start first backend server,
+* start/stop backend servers depending on the load,
+* set number of minimum running backend servers.
 
 ngx_http_upstream_init_busy-0.8.0.patch:
 Patch against nginx versions 0.8.0-0.8.16 (by Ryan Lienhart Dahl),
@@ -34,6 +37,11 @@ which adds ability to stop/resume request processing.
 
 ngx_http_upstream_init_busy-0.8.17.patch:
 Same as above, for versions 0.8.17-0.8.21.
+
+ngx_http_upstream_round_robin.patch:
+Patch against bulit-in load balancer, which adds ability to control
+status of the backend servers ("alive" / "down") on-the-fly without
+modifications in nginx configuration.
 
 
 INSTALLATION (with patched nginx-upstream-fair, versions ommited):
@@ -61,6 +69,7 @@ $ make && make install
 
 CONFIGURATION NOTES:
 --------------------
+Following applies only to versions older than nginx-0.8.28:
 Since ngx_supervisord-1.2 you cannot set "worker_connections" to 512,
 it can be set to either lower or higher number, just not equal to 512.
 For details please check CHANGES log and/or source code.
@@ -68,20 +77,52 @@ For details please check CHANGES log and/or source code.
 
 CONFIGURATION DIRECTIVES:
 -------------------------
-supervisord path [user:pass] (context: upstream)
+  supervisord path [user:pass] (context: upstream)
+  ------------------------------------------------
+  Path to supervisord's listening socket, path can be:
+  * IP:port (127.0.0.1:8000)
+  * UNIX socket path (unix:/path/to/supervisord.sock)
+  * none.
 
-Path to supervisord's listening socket, path can be:
-* IP:port (127.0.0.1:8000)
-* UNIX socket path (unix:/path/to/supervisord.sock)
+  When supervisord is explicity set to "none" then module will execute
+  every command instantly without even talking to supervisord daemon,
+  but it will still notice registered modules about backend servers
+  status changes, current load, etc.
+  This basically enables all ngx_supervisord features without
+  the need to run supervisord daemon.
+
+  NOTE:
+  When supervisord is set to "none" it won't try to auto-start first
+  backend server when all backend servers are considered down.
+
+  supervisord_name name (context: upstream)
+  -----------------------------------------
+  Use name instead of upstream{}'s name when communicating with supervisord.
+
+  supervisord_inherit_backend_status (context: upstream)
+  ------------------------------------------------------
+  Use configured backend statuses (server is considered alive unless it
+  is followed by "down" in nginx.conf). When this directive isn't used
+  supervisord assumes that all servers are down and it will try to start
+  them when needed.
+
+  supervisord_start upstream_name (context: location)
+  supervisord_stop  upstream_name (context: location)
+  ---------------------------------------------------
+  Executes "start" / "stop" command on given upstream.
+
+  Using one of above handlers creates valid URIs:
+  /location/0, /location/1, ..., /location/n-1,
+  /location/any
+  for upstreams with n backends.
+
+  NOTE:
+  Successful response means that request was processed by ngx_supervisord,
+  not that the command was already executed by supervisord daemon.
 
 
-supervisord_name name (context: upstream)
-
-Use name instead of upstream{}'s name when communicating with supervisord.
-
-
-EXAMPLE CONFIGURATION:
-----------------------
+EXAMPLE CONFIGURATION #1:
+-------------------------
 upstream backend {
     server 127.0.0.1:8000;
     server 127.0.0.1:8001;
@@ -99,6 +140,42 @@ With such configuration, ngx_supervisord will be starting/stopping
 [program:backend0] (which should be listening on 127.0.0.1:8000)
 and [program:backend1] (which should be listening on 127.0.0.1:8001)
 from supervisord's configuration.
+
+
+EXAMPLE CONFIGURATION #2:
+-------------------------
+upstream backend {
+    server 127.0.0.1:8000;
+    server 127.0.0.1:8001;
+    server 127.0.0.1:8002 down;
+    supervisord none;
+    supervisord_inherit_backend_status;
+}
+
+server {
+    location / {
+        proxy_pass http://backend;
+    }
+
+    location /_start/ {
+        allow               127.0.0.1;
+        deny                all;
+        supervisord_start   backend;
+    }
+
+    location /_stop/ {
+        allow               127.0.0.1;
+        deny                all;
+        supervisord_stop    backend;
+    }
+}
+
+With such configuration, ngx_supervisord will assume that 2 out of 3
+backends are alive and it will never talk to supervisord daemon.
+
+Calling "http://localhost/_start/2" will change status of
+"127.0.0.1:8002" backend to "alive" and ngx_supervisord will notice
+all ngx_supervisord-aware load balancers about this change.
 
 
 CREDITS:

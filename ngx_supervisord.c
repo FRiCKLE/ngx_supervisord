@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, FRiCKLE Piotr Sikora <info@frickle.com>
+ * Copyright (c) 2009-2010, FRiCKLE Piotr Sikora <info@frickle.com>
  * All rights reserved.
  *
  * This project was fully funded by megiteam.pl.
@@ -31,6 +31,7 @@
 #include <ngx_event.h>
 #include <ngx_http.h>
 #include <ngx_supervisord.h>
+#include <nginx.h>
 
 #if (NGX_HTTP_UPSTREAM_INIT_BUSY_PATCH_VERSION != 1)
   #error "ngx_supervisord requires NGX_HTTP_UPSTREAM_INIT_BUSY_PATCH v1"
@@ -42,24 +43,34 @@
 #define NGX_SUPERVISORD_ANTISPAM          30000
 
 void       *ngx_supervisord_create_srv_conf(ngx_conf_t *);
+void       *ngx_supervisord_create_loc_conf(ngx_conf_t *);
 ngx_int_t   ngx_supervisord_preconf(ngx_conf_t *);
 char       *ngx_supervisord_conf(ngx_conf_t *, ngx_command_t *, void *);
 char       *ngx_supervisord_conf_name(ngx_conf_t *, ngx_command_t *, void *);
+char       *ngx_supervisord_conf_inherit_backend_status(ngx_conf_t *,
+                ngx_command_t *, void *);
+char       *ngx_supervisord_conf_start_handler(ngx_conf_t *, ngx_command_t *,
+                void *);
+char       *ngx_supervisord_conf_stop_handler(ngx_conf_t *, ngx_command_t *,
+                void *);
 ngx_int_t   ngx_supervisord_module_init(ngx_cycle_t *);
 ngx_int_t   ngx_supervisord_worker_init(ngx_cycle_t *);
 void        ngx_supervisord_monitor(ngx_event_t *);
 void        ngx_supervisord_queue_monitor(ngx_event_t *);
 void        ngx_supervisord_finalize_request(ngx_http_request_t *, ngx_int_t);
+const char *ngx_supervisord_get_command(ngx_uint_t);
 
 typedef struct {
     ngx_url_t                      server;
     ngx_str_t                      userpass;	/* user:pass format */
     ngx_str_t                      name;
+    ngx_int_t                      is_fake;
 } ngx_supervisord_conf_t;
 
 typedef struct {
     ngx_supervisord_conf_t         supervisord;
     ngx_http_upstream_srv_conf_t  *uscf;	/* original uscf */
+    ngx_int_t                      inherit_backend_status;
     /* memory */
     ngx_shm_zone_t                *shm;
     ngx_pool_t                    *lpool;	/* local memory pool */
@@ -83,13 +94,17 @@ typedef struct {
 } ngx_supervisord_srv_conf_t;
 
 typedef struct {
+    ngx_http_upstream_srv_conf_t  *upstream;
+    ngx_uint_t                     command;
+} ngx_supervisord_loc_conf_t;
+
+typedef struct {
     ngx_uint_t                     command;
     ngx_uint_t                     backend;
 } ngx_supervisord_ctx_t;
 
 typedef struct {
-    ngx_pool_t                    *pool;
-    ngx_http_upstream_srv_conf_t  *uscf;
+    ngx_supervisord_srv_conf_t    *supcf;
     ngx_http_request_t            *request;
     ngx_uint_t                     command;
     ngx_uint_t                     backend;
@@ -117,6 +132,27 @@ static ngx_command_t  ngx_supervisord_module_commands[] = {
       0,
       NULL },
 
+    { ngx_string("supervisord_inherit_backend_status"),
+      NGX_HTTP_UPS_CONF|NGX_CONF_NOARGS,
+      ngx_supervisord_conf_inherit_backend_status,
+      0,
+      0,
+      NULL },
+
+    { ngx_string("supervisord_start"),
+      NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_supervisord_conf_start_handler,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL },
+
+    { ngx_string("supervisord_stop"),
+      NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_supervisord_conf_stop_handler,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL },
+      
       ngx_null_command
 };
 
@@ -130,7 +166,7 @@ static ngx_http_module_t  ngx_supervisord_module_ctx = {
     ngx_supervisord_create_srv_conf,    /* create server configuration */
     NULL,                               /* merge server configuration */
 
-    NULL,                               /* create location configuration */
+    ngx_supervisord_create_loc_conf,    /* create location configuration */
     NULL                                /* merge location configuration */
 };
 
@@ -170,6 +206,19 @@ ngx_supervisord_create_srv_conf(ngx_conf_t *cf)
     }
 
     return supcf;
+}
+
+void *
+ngx_supervisord_create_loc_conf(ngx_conf_t *cf)
+{
+    ngx_supervisord_loc_conf_t  *suplcf;
+
+    suplcf = ngx_pcalloc(cf->pool, sizeof(ngx_supervisord_loc_conf_t));
+    if (suplcf == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    return suplcf;
 }
 
 ngx_int_t
@@ -233,23 +282,37 @@ ngx_supervisord_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     if (supcf->supervisord.server.url.data != NULL) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-            "supervisord already set to \"%V\"", &supcf->supervisord.server.url);
+            "supervisord already set to \"%V\"",
+            &supcf->supervisord.server.url);
 
         return NGX_CONF_ERROR;
     }
 
-    supcf->supervisord.server.url = value[1];
-    if (ngx_parse_url(cf->pool, &supcf->supervisord.server) != NGX_OK) {
-        if (supcf->supervisord.server.err) {
-            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,"%s in supervisord \"%V\"",
-                supcf->supervisord.server.err, &supcf->supervisord.server.url);
+    if (supcf->supervisord.is_fake) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            "supervisord already set to \"none\"");
+
+        return NGX_CONF_ERROR;
+    }
+
+    if (ngx_strncmp(value[1].data, "none", 4) == 0) {
+        supcf->supervisord.is_fake = 1;
+    } else {
+        supcf->supervisord.server.url = value[1];
+        if (ngx_parse_url(cf->pool, &supcf->supervisord.server) != NGX_OK) {
+            if (supcf->supervisord.server.err) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                    "%s in supervisord \"%V\"",
+                    supcf->supervisord.server.err,
+                    &supcf->supervisord.server.url);
+            }
+
+            return NGX_CONF_ERROR;
         }
 
-        return NGX_CONF_ERROR;
-    }
-
-    if (cf->args->nelts == 3) {
-        supcf->supervisord.userpass = value[2];
+        if (cf->args->nelts == 3) {
+            supcf->supervisord.userpass = value[2];
+        }
     }
 
     supcf->shm = ngx_shared_memory_add(cf, &uscf->host, 4 * ngx_pagesize,
@@ -305,10 +368,23 @@ ngx_supervisord_conf_name(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     return NGX_CONF_OK;
 }
 
+char *
+ngx_supervisord_conf_inherit_backend_status(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf)
+{
+    ngx_supervisord_srv_conf_t  *supcf;
+
+    supcf = ngx_http_conf_get_module_srv_conf(cf, ngx_supervisord_module);
+    supcf->inherit_backend_status = 1;
+
+    return NGX_CONF_OK;
+}
+
 ngx_int_t
 ngx_supervisord_module_init(ngx_cycle_t *cycle)
 {
     ngx_supervisord_srv_conf_t  **supcfp;
+    ngx_http_upstream_server_t   *server;
     ngx_uint_t                    i, n;
     size_t                        size;
 
@@ -327,14 +403,24 @@ ngx_supervisord_module_init(ngx_cycle_t *cycle)
             return NGX_ERROR;
         }
 
-        for (n = 0; n < supcfp[i]->nservers; n++) {
-            supcfp[i]->lservers[n] = NGX_SUPERVISORD_SRV_DOWN;
+        if (supcfp[i]->inherit_backend_status) {
+            server = supcfp[i]->uscf->servers->elts;
+            for (n = 0; n < supcfp[i]->nservers; n++) {
+                supcfp[i]->lservers[n] = server[n].down;
+                if (!server[n].down) {
+                    supcfp[i]->aservers++;
+                }
+            }
+        } else {
+            for (n = 0; n < supcfp[i]->nservers; n++) {
+                supcfp[i]->lservers[n] = NGX_SUPERVISORD_SRV_DOWN;
+            }
         }
 
         if (supcfp[i]->backend_monitor != NULL) {
             for (n = 0; n < supcfp[i]->nservers; n++) {
                 supcfp[i]->backend_monitor(supcfp[i]->uscf, n,
-                                           NGX_SUPERVISORD_SRV_DOWN);
+                                           supcfp[i]->lservers[n]);
             }
         }
 
@@ -351,7 +437,7 @@ ngx_supervisord_module_init(ngx_cycle_t *cycle)
         }
 
         for (n = 0; n < supcfp[i]->nservers; n++) {
-            supcfp[i]->shservers[n] = NGX_SUPERVISORD_SRV_DOWN;
+            supcfp[i]->shservers[n] = supcfp[i]->lservers[n];
         }
 
         supcfp[i]->total_reqs = ngx_slab_alloc_locked(supcfp[i]->shpool,
@@ -386,6 +472,9 @@ ngx_supervisord_worker_init(ngx_cycle_t *cycle)
 {
     ngx_connection_t  *dummy;
 
+#if (nginx_version >= 8028)
+    if (ngx_process > NGX_PROCESS_WORKER) {
+#else
     /*
      * This is really cheap hack, but it's the only way
      * to distinguish "workers" from "cache manager"
@@ -394,6 +483,7 @@ ngx_supervisord_worker_init(ngx_cycle_t *cycle)
      * NOTE: "worker_connections" cannot be set to 512!
      */
     if (cycle->connection_n == 512) {
+#endif
         /* work only on real worker processes */
         return NGX_OK;
     }
@@ -627,7 +717,9 @@ ngx_supervisord_check_servers(ngx_http_request_t *or)
         goto wrong_params;
     }
 
-    if (supcf->supervisord.server.url.data == NULL) {
+    if (!supcf->supervisord.is_fake
+        && supcf->supervisord.server.url.data == NULL)
+    {
         /*
          * allow ngx_supervisord-enabled modules to work
          * even when supervisord is not configured.
@@ -645,7 +737,7 @@ ngx_supervisord_check_servers(ngx_http_request_t *or)
         "[supervisord] upstream: %V, checking servers, up: %ui/%ui req#: %ui",
         &supcf->uscf->host, supcf->aservers, supcf->nservers, tr);
 
-    if (supcf->aservers > 0) {
+    if (supcf->aservers > 0 || supcf->supervisord.is_fake) {
         return NGX_OK;
     }
 
@@ -692,6 +784,27 @@ wrong_params:
 }
 
 void
+ngx_supervisord_fake_execute(ngx_uint_t cmd, ngx_uint_t backend,
+    ngx_http_request_t *r)
+{
+    ngx_supervisord_srv_conf_t  *supcf;
+    ngx_supervisord_ctx_t       *ctx;
+
+    supcf = ngx_http_get_module_srv_conf(r, ngx_supervisord_module);
+    ctx = ngx_http_get_module_ctx(r, ngx_supervisord_module);
+
+    ctx->command = cmd;
+    ctx->backend = backend;
+
+    ngx_log_debug3(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                   "[supervisord] upstream: %V, backend: %ui, command: %s",
+                   &supcf->uscf->host, backend,
+                   ngx_supervisord_get_command(cmd));
+
+    ngx_supervisord_finalize_request(r, 0);
+}
+
+void
 ngx_supervisord_real_execute(ngx_uint_t cmd, ngx_uint_t backend,
     ngx_http_request_t *r)
 {
@@ -714,20 +827,26 @@ ngx_supervisord_cmd_checker(ngx_event_t *ev)
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, ngx_cycle->log, 0,
                   "[supervisord] upstream: %V, executing checker...",
-                  &qcmd->uscf->host);
-    rc = qcmd->checker(qcmd->uscf, qcmd->backend);
+                  &qcmd->supcf->uscf->host);
+    rc = qcmd->checker(qcmd->supcf->uscf, qcmd->backend);
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, ngx_cycle->log, 0,
                   "[supervisord] upstream: %V, checker rc: %i",
-                  &qcmd->uscf->host, rc);
+                  &qcmd->supcf->uscf->host, rc);
 
     if (rc != NGX_OK) {
         ngx_add_timer(ev, NGX_SUPERVISORD_QUEUE_INTERVAL);
         return;
     }
 
-    ngx_supervisord_real_execute(qcmd->command, qcmd->backend, qcmd->request);
+    if (qcmd->supcf->supervisord.is_fake) {
+        ngx_supervisord_fake_execute(qcmd->command, qcmd->backend,
+                                     qcmd->request);
+    } else {
+        ngx_supervisord_real_execute(qcmd->command, qcmd->backend,
+                                     qcmd->request);
+    }
 
-    pool = qcmd->pool;
+    pool = qcmd->supcf->lpool;
     (void) ngx_pfree(pool, qcmd);
     (void) ngx_pfree(pool, dummy);
     (void) ngx_pfree(pool, ev);
@@ -754,7 +873,9 @@ ngx_supervisord_execute(ngx_http_upstream_srv_conf_t *uscf,
         goto wrong_params;
     }
 
-    if (supcf->supervisord.server.url.data == NULL) {
+    if (!supcf->supervisord.is_fake
+        && supcf->supervisord.server.url.data == NULL)
+    {
         /*
          * allow ngx_supervisord-enabled modules to work
          * even when supervisord is not configured.
@@ -866,8 +987,7 @@ ngx_supervisord_execute(ngx_http_upstream_srv_conf_t *uscf,
                 return NGX_ERROR;
             }
 
-            qcmd->pool = supcf->lpool;
-            qcmd->uscf = uscf;
+            qcmd->supcf = supcf;
             qcmd->request = r;
             qcmd->command = cmd;
             qcmd->backend = (ngx_uint_t) backend;
@@ -896,7 +1016,11 @@ ngx_supervisord_execute(ngx_http_upstream_srv_conf_t *uscf,
         }
     }
 
-    ngx_supervisord_real_execute(cmd, (ngx_uint_t) backend, r);
+    if (supcf->supervisord.is_fake) {
+        ngx_supervisord_fake_execute(cmd, (ngx_uint_t) backend, r);
+    } else {
+        ngx_supervisord_real_execute(cmd, (ngx_uint_t) backend, r);
+    }
 
     return NGX_OK;
 
@@ -1320,6 +1444,13 @@ ngx_supervisord_finalize_request(ngx_http_request_t *r, ngx_int_t rc)
                    "[supervisord] upstream: %V, finalizing request, rc: %i",
                    &supcf->uscf->host, rc);
 
+    if (supcf->supervisord.is_fake) {
+        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                       "[supervisord] upstream: %V, response: %i none",
+                       &supcf->uscf->host, rc);
+        goto skip_fake;
+    }
+
     if (rc != 0) {
         if (rc == 502) {
             ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0,
@@ -1357,6 +1488,7 @@ ngx_supervisord_finalize_request(ngx_http_request_t *r, ngx_int_t rc)
         goto failed;
     }
 
+skip_fake:
     ngx_shmtx_lock(&supcf->shpool->mutex);
 
     switch (ctx->command) {
@@ -1414,6 +1546,12 @@ failed:
 
     /* disable further "less-than-important" logging... */
     r->connection->log->log_level = NGX_LOG_EMERG;
+}
+
+ngx_chain_t *
+ngx_supervisord_send_chain(ngx_connection_t *c, ngx_chain_t *in,  off_t limit)
+{
+    return NULL;
 }
 
 ngx_http_request_t *
@@ -1477,6 +1615,8 @@ ngx_supervisord_init(ngx_pool_t *pool, ngx_http_upstream_srv_conf_t *ouscf)
     c->fd = -1;
     c->data = r;
 
+    c->send_chain = ngx_supervisord_send_chain;
+
     r->main = r;
     r->connection = c;
 
@@ -1490,11 +1630,14 @@ ngx_supervisord_init(ngx_pool_t *pool, ngx_http_upstream_srv_conf_t *ouscf)
         goto failed_conn;
     }
 
+    c->read->log = log;
+
     c->write = ngx_pcalloc(c->pool, sizeof(ngx_event_t));
     if (c->write == NULL) {
         goto failed_conn;
     }
 
+    c->write->log = log;
     c->write->active = 1;
 
     /* used by ngx_http_log_request */
@@ -1578,6 +1721,9 @@ ngx_supervisord_init(ngx_pool_t *pool, ngx_http_upstream_srv_conf_t *ouscf)
     u->schema.len = sizeof("supervisord://") - 1;
     u->schema.data = (u_char *) "supervisord://";
     
+    u->peer.log = log;
+    u->peer.log_error = NGX_ERROR_ERR;
+
     u->output.tag = (ngx_buf_tag_t) &ngx_supervisord_module;
 
     /* configure upstream */
@@ -1612,4 +1758,216 @@ failed_none:
     (void) ngx_pfree(pool, c);
 
     return NULL;
+}
+
+/*
+ * ngx_supervisord handlers
+ */
+
+static char  ngx_supervisord_success_page_top[] =
+"<html>" CRLF
+"<head><title>Command executed successfully</title></head>" CRLF
+"<body bgcolor=\"white\">" CRLF
+"<center><h1>Command executed successfully</h1>" CRLF
+;
+
+static char  ngx_supervisord_success_page_tail[] =
+CRLF "</center>" CRLF
+"<hr><center>" NGINX_VER "</center>" CRLF
+"</body>" CRLF
+"</html>" CRLF
+;
+
+u_char *
+ngx_strlrchr(u_char *p, u_char *last, u_char c)
+{
+    while (p <= last) {
+        if (*last == c) {
+            return last;
+        }
+
+        last--;
+    }
+
+    return NULL;
+}
+
+ngx_int_t
+ngx_supervisord_command_handler(ngx_http_request_t *r)
+{
+    ngx_supervisord_loc_conf_t  *suplcf;
+    u_char                      *p, *last;
+    ngx_int_t                    backend, rc;
+    ngx_chain_t                  out;
+    ngx_buf_t                   *b;
+    const char                  *cmd;
+    size_t                       len;
+
+    if (!(r->method & (NGX_HTTP_GET|NGX_HTTP_HEAD))) {
+        return NGX_HTTP_NOT_ALLOWED;
+    }
+
+    suplcf = ngx_http_get_module_loc_conf(r, ngx_supervisord_module);
+    if (!suplcf->upstream) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    last = r->uri.data + r->uri.len - 1;
+    p = ngx_strlrchr(r->uri.data, last, '/');
+    p++;
+
+    if (ngx_strncmp(p, "any", 3) == 0) {
+        backend = -1;
+    } else {
+        backend = ngx_atoi(p, last - p + 1);
+        if (backend == NGX_ERROR) {
+            return NGX_HTTP_NOT_FOUND;
+        }
+    }
+
+    if (backend >= (ngx_int_t) suplcf->upstream->servers->nelts) {
+        return NGX_HTTP_NOT_FOUND;
+    }
+
+    cmd = ngx_supervisord_get_command(suplcf->command);
+    if (cmd == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    rc = ngx_supervisord_execute(suplcf->upstream, suplcf->command, backend, NULL);
+    if (rc != NGX_OK) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    len = sizeof(ngx_supervisord_success_page_top) - 1
+        + sizeof(ngx_supervisord_success_page_tail) - 1
+        + sizeof("<br>Command: ") - 1 + sizeof(CRLF "<br>Backend: ") - 1
+        + ngx_strlen(cmd);
+
+    if (backend == -1) {
+        len += 3;
+    } else {
+        len += int_strlen(backend);
+    }
+
+    r->headers_out.content_type.len = sizeof("text/html") - 1;
+    r->headers_out.content_type.data = (u_char *) "text/html";
+    r->headers_out.status = NGX_HTTP_OK;
+    r->headers_out.content_length_n = len;
+
+    if (r->method == NGX_HTTP_HEAD) {
+        rc = ngx_http_send_header(r);
+        if (rc == NGX_ERROR || rc > NGX_OK || r->header_only) {
+            return rc;
+        }
+    }
+
+    b = ngx_create_temp_buf(r->pool, len);
+    if (b == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    out.buf = b;
+    out.next = NULL;
+
+    b->last = ngx_cpymem(b->last, ngx_supervisord_success_page_top,
+                         sizeof(ngx_supervisord_success_page_top) - 1);
+    b->last = ngx_cpymem(b->last, "<br>Command: ", sizeof("<br>Command: ") - 1);
+    b->last = ngx_cpymem(b->last, cmd, ngx_strlen(cmd));
+    b->last = ngx_cpymem(b->last, CRLF "<br>Backend: ",
+                         sizeof(CRLF "<br>Backend: ") - 1);
+    if (backend == -1) {
+        b->last = ngx_cpymem(b->last, "any", 3);
+    } else {
+        b->last = ngx_sprintf(b->last, "%i", backend);
+    }
+    b->last = ngx_cpymem(b->last, ngx_supervisord_success_page_tail,
+                         sizeof(ngx_supervisord_success_page_tail) - 1);
+    b->last_buf = 1;
+
+    rc = ngx_http_send_header(r);
+    if (rc == NGX_ERROR || rc > NGX_OK || r->header_only) {
+       return rc;
+    }
+
+    return ngx_http_output_filter(r, &out);
+}
+
+ngx_http_upstream_srv_conf_t *
+ngx_supervisord_find_upstream(ngx_conf_t *cf, ngx_str_t value)
+{
+    ngx_http_upstream_main_conf_t   *umcf;
+    ngx_http_upstream_srv_conf_t   **uscfp;
+    ngx_uint_t                       i;
+
+    umcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_upstream_module);
+
+    uscfp = umcf->upstreams.elts;
+    for (i = 0; i < umcf->upstreams.nelts; i++) {
+        if (uscfp[i]->host.len == value.len
+            && ngx_strncasecmp(uscfp[i]->host.data, value.data, value.len) == 0)
+        {
+            return uscfp[i];
+        }
+    }
+
+    return NULL;
+}
+
+char *
+ngx_supervisord_conf_start_handler(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf)
+{
+    ngx_str_t                   *value = cf->args->elts;
+    ngx_supervisord_loc_conf_t  *suplcf = conf;
+    ngx_http_core_loc_conf_t    *clcf;
+
+    if (suplcf->upstream) {
+        return "is either duplicate or collides with \"supervisord_stop\"";
+    }
+
+    suplcf->upstream = ngx_supervisord_find_upstream(cf, value[1]);
+    if (suplcf->upstream == NULL) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            "supervisord_start refers to non-existing upstream \"%V\"",
+            &value[1]);
+
+        return NGX_CONF_ERROR;
+    }
+
+    suplcf->command = NGX_SUPERVISORD_CMD_START;
+
+    clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
+    clcf->handler = ngx_supervisord_command_handler;
+
+    return NGX_CONF_OK;
+}
+
+char *
+ngx_supervisord_conf_stop_handler(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf)
+{
+    ngx_str_t                   *value = cf->args->elts;
+    ngx_supervisord_loc_conf_t  *suplcf = conf;
+    ngx_http_core_loc_conf_t    *clcf;
+
+    if (suplcf->upstream) {
+        return "is either duplicate or collides with \"supervisord_start\"";
+    }
+
+    suplcf->upstream = ngx_supervisord_find_upstream(cf, value[1]);
+    if (suplcf->upstream == NULL) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            "supervisord_stop refers to non-existing upstream \"%V\"",
+            &value[1]);
+
+        return NGX_CONF_ERROR;
+    }
+
+    suplcf->command = NGX_SUPERVISORD_CMD_STOP;
+
+    clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
+    clcf->handler = ngx_supervisord_command_handler;
+
+    return NGX_CONF_OK;
 }

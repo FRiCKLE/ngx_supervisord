@@ -1,0 +1,167 @@
+--- src/http/ngx_http_upstream_round_robin.c.orig	Mon Jan  4 05:26:58 2010
++++ src/http/ngx_http_upstream_round_robin.c	Mon Jan  4 05:27:44 2010
+@@ -7,14 +7,46 @@
+ #include <ngx_config.h>
+ #include <ngx_core.h>
+ #include <ngx_http.h>
++#include <ngx_supervisord.h>
+ 
++#if (NGX_SUPERVISORD_API_VERSION != 2)
++  #error "ngx_supervisord-aware upstream requires NGX_SUPERVISORD_API v2"
++#endif
+ 
++
++/*
++ * disable sorting
+ static ngx_int_t ngx_http_upstream_cmp_servers(const void *one,
+     const void *two);
++ */
+ static ngx_uint_t
+ ngx_http_upstream_get_peer(ngx_http_upstream_rr_peers_t *peers);
+ 
+ 
++void
++ngx_http_upstream_backend_monitor(ngx_http_upstream_srv_conf_t *uscf,
++    ngx_uint_t backend, ngx_uint_t new_status)
++{
++    ngx_http_upstream_rr_peers_t  *peers;
++    ngx_uint_t                     i;
++
++    peers = uscf->peer.data;
++    for (i = 0; i < peers->number; i++) {
++        if (peers->peer[i].onumber == backend) {
++            if (new_status == NGX_SUPERVISORD_SRV_UP) {
++                peers->peer[i].down = 0;
++                peers->peer[i].weight = peers->peer[i].oweight;
++                peers->peer[i].current_weight = peers->peer[i].oweight;
++            } else {
++                peers->peer[i].down = 1;
++                peers->peer[i].weight = 0;
++                peers->peer[i].current_weight = 0;
++            }
++        }
++    }
++}
++
++
+ ngx_int_t
+ ngx_http_upstream_init_round_robin(ngx_conf_t *cf,
+     ngx_http_upstream_srv_conf_t *us)
+@@ -27,6 +59,9 @@
+     us->peer.init = ngx_http_upstream_init_round_robin_peer;
+ 
+     if (us->servers) {
++        ngx_supervisord_add_backend_monitor(us,
++            ngx_http_upstream_backend_monitor);
++
+         server = us->servers->elts;
+ 
+         n = 0;
+@@ -65,15 +100,20 @@
+                 peers->peer[n].down = server[i].down;
+                 peers->peer[n].weight = server[i].down ? 0 : server[i].weight;
+                 peers->peer[n].current_weight = peers->peer[n].weight;
++                peers->peer[n].onumber = i;
++                peers->peer[n].oweight = server[i].weight;
+                 n++;
+             }
+         }
+ 
+         us->peer.data = peers;
+ 
++/*
++ * disable sorting
+         ngx_sort(&peers->peer[0], (size_t) n,
+                  sizeof(ngx_http_upstream_rr_peer_t),
+                  ngx_http_upstream_cmp_servers);
++ */
+ 
+         /* backup servers */
+ 
+@@ -118,15 +158,20 @@
+                 backup->peer[n].max_fails = server[i].max_fails;
+                 backup->peer[n].fail_timeout = server[i].fail_timeout;
+                 backup->peer[n].down = server[i].down;
++                backup->peer[n].onumber = i;
++                backup->peer[n].oweight = server[i].weight;
+                 n++;
+             }
+         }
+ 
+         peers->next = backup;
+ 
++/*
++ * disable sorting
+         ngx_sort(&backup->peer[0], (size_t) n,
+                  sizeof(ngx_http_upstream_rr_peer_t),
+                  ngx_http_upstream_cmp_servers);
++ */
+ 
+         return NGX_OK;
+     }
+@@ -176,6 +221,8 @@
+         peers->peer[i].current_weight = 1;
+         peers->peer[i].max_fails = 1;
+         peers->peer[i].fail_timeout = 10;
++        peers->peer[i].onumber = 0;
++        peers->peer[i].oweight = 1;
+     }
+ 
+     us->peer.data = peers;
+@@ -186,6 +233,8 @@
+ }
+ 
+ 
++/*
++ * disable sorting
+ static ngx_int_t
+ ngx_http_upstream_cmp_servers(const void *one, const void *two)
+ {
+@@ -196,6 +245,7 @@
+ 
+     return (first->weight < second->weight);
+ }
++ */
+ 
+ 
+ ngx_int_t
+@@ -243,7 +293,7 @@
+                                ngx_http_upstream_save_round_robin_peer_session;
+ #endif
+ 
+-    return NGX_OK;
++    return ngx_supervisord_check_servers(r);
+ }
+ 
+ 
+@@ -402,6 +452,16 @@
+     } else {
+ 
+         /* there are several peers */
++
++        for (i = 0; i < rrp->peers->number; i++) {
++             if (!rrp->peers->peer[i].down) {
++                 break;
++             }
++        }
++
++        if (i == rrp->peers->number) {
++             return NGX_BUSY;
++        }
+ 
+         if (pc->tries == rrp->peers->number) {
+ 
+--- src/http/ngx_http_upstream_round_robin.h.orig	Mon Jan  4 05:27:00 2010
++++ src/http/ngx_http_upstream_round_robin.h	Mon Jan  4 05:27:05 2010
+@@ -17,9 +17,11 @@
+     struct sockaddr                *sockaddr;
+     socklen_t                       socklen;
+     ngx_str_t                       name;
++    ngx_uint_t                      onumber;
+ 
+     ngx_int_t                       current_weight;
+     ngx_int_t                       weight;
++    ngx_int_t                       oweight;
+ 
+     ngx_uint_t                      fails;
+     time_t                          accessed;

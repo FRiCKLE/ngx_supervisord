@@ -1,9 +1,27 @@
+2010-01-04    VERSION 1.3
+    * Add "supervisord_inherit_backend_status" directive.
+
+    * Add "supervisord_start" and "supervisord_stop" handlers.
+
+    * Add "none" as valid argument in "supervisord" directive.
+
+    * Add patch against bulit-in load balancer.
+
+      Combination of the above changes allows one to dynamically
+      take backend servers out of rotation without the need to
+      use supervisord daemon.
+      Those changes were somehow inspired by James Byers's comment
+      on Hacker News saying that nginx is missing such feature.
+
+      For detailed description please check README file.
+
 2009-11-19    VERSION 1.2
     * Don't run "monitors" on "cache manager" and "cache loader"
       processes (this could lead to crash of either of them 
       when ngx_supervisord-enable load balancer tried to access
       data available only on "worker" processes).
 
+      Following applies only to versions older than nginx-0.8.28:
       NOTE: This modification uses undocumented nginx's "feature"
       to distinguish mentioned processes and starting from this
       release "worker_connections" cannot be set to 512 (it can be
