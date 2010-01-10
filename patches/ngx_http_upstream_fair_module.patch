@@ -1,0 +1,300 @@
+--- ngx_http_upstream_fair_module.c.orig	Wed Sep 23 19:28:58 2009
++++ ngx_http_upstream_fair_module.c	Wed Oct 28 17:25:17 2009
+@@ -8,8 +8,18 @@
+ #include <ngx_config.h>
+ #include <ngx_core.h>
+ #include <ngx_http.h>
++#include <ngx_supervisord.h>
+ 
++#if (NGX_SUPERVISORD_API_VERSION != 2)
++  #error "ngx_http_upstream_fair_module requires NGX_SUPERVISORD_API v2"
++#endif
++
+ typedef struct {
++    ngx_uint_t                          load_threshold;
++    ngx_uint_t                          min_servers;
++} ngx_http_upstream_fair_srv_conf_t;
++
++typedef struct {
+     ngx_uint_t                          nreq;
+     ngx_uint_t                          total_req;
+     ngx_uint_t                          last_req_id;
+@@ -37,6 +47,7 @@ typedef struct {
+     struct sockaddr                    *sockaddr;
+     socklen_t                           socklen;
+     ngx_str_t                           name;
++    ngx_uint_t                          onumber;
+ 
+     ngx_uint_t                          weight;
+     ngx_uint_t                          max_fails;
+@@ -97,6 +108,12 @@ static char *ngx_http_upstream_fair_set_shm_size(ngx_c
+     ngx_command_t *cmd, void *conf);
+ static ngx_int_t ngx_http_upstream_fair_init_module(ngx_cycle_t *cycle);
+ 
++static void *ngx_http_upstream_fair_create_srv_conf(ngx_conf_t *cf);
++static char *ngx_http_upstream_fair_set_threshold(ngx_conf_t *cf,
++    ngx_command_t *cmd, void *conf);
++static char *ngx_http_upstream_fair_set_min_servers(ngx_conf_t *cf,
++    ngx_command_t *cmd, void *conf);
++
+ #if (NGX_HTTP_EXTENDED_STATUS)
+ static ngx_chain_t *ngx_http_upstream_fair_report_status(ngx_http_request_t *r,
+     ngx_int_t *length);
+@@ -125,6 +142,20 @@ static ngx_command_t  ngx_http_upstream_fair_commands[
+       0,
+       NULL },
+ 
++    { ngx_string("fair_load_threshold"),
++      NGX_HTTP_UPS_CONF|NGX_CONF_TAKE1,
++      ngx_http_upstream_fair_set_threshold,
++      0,
++      0,
++      NULL },
++
++    { ngx_string("fair_min_servers"),
++      NGX_HTTP_UPS_CONF|NGX_CONF_TAKE1,
++      ngx_http_upstream_fair_set_min_servers,
++      0,
++      0,
++      NULL },
++
+       ngx_null_command
+ };
+ 
+@@ -136,7 +167,7 @@ static ngx_http_module_t  ngx_http_upstream_fair_modul
+     NULL,                                  /* create main configuration */
+     NULL,                                  /* init main configuration */
+ 
+-    NULL,                                  /* create server configuration */
++    ngx_http_upstream_fair_create_srv_conf, /* create server configuration */
+     NULL,                                  /* merge server configuration */
+ 
+     NULL,                                  /* create location configuration */
+@@ -371,8 +402,95 @@ ngx_http_upstream_fair_set_shm_size(ngx_conf_t *cf, ng
+     return NGX_CONF_OK;
+ }
+ 
++static void *
++ngx_http_upstream_fair_create_srv_conf(ngx_conf_t *cf)
++{
++    ngx_http_upstream_fair_srv_conf_t  *faircf;
+ 
++    faircf = ngx_pcalloc(cf->pool, sizeof(ngx_http_upstream_fair_srv_conf_t));
++    if (faircf == NULL) {
++        return NGX_CONF_ERROR;
++    }
++
++    faircf->load_threshold = 100;
++
++    return faircf;
++}
++
+ static char *
++ngx_http_upstream_fair_set_threshold(ngx_conf_t *cf, ngx_command_t *cmd,
++    void *conf)
++{
++    ngx_str_t                          *value = cf->args->elts;
++    ngx_http_upstream_fair_srv_conf_t  *faircf;
++    ssize_t                             threshold;
++
++    faircf = ngx_http_conf_get_module_srv_conf(cf,
++                                               ngx_http_upstream_fair_module);
++
++    if (faircf->load_threshold != 100) {
++        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
++                           "fair_load_threshold already set to \"%ui\"",
++                           faircf->load_threshold);
++
++        return NGX_CONF_ERROR;
++    }
++
++    threshold = ngx_parse_size(&value[1]);
++
++    if (threshold == NGX_ERROR) {
++        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
++                           "fair_load_threshold value must be a number > 0");
++
++        return NGX_CONF_ERROR;
++    }
++
++    if (threshold == 0) {
++        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
++                           "fair_load_threshold value must be a number > 0");
++
++        return NGX_CONF_ERROR;
++    }
++
++    faircf->load_threshold = (ngx_uint_t) threshold;
++
++    return NGX_CONF_OK;
++}
++
++static char *
++ngx_http_upstream_fair_set_min_servers(ngx_conf_t *cf, ngx_command_t *cmd,
++    void *conf)
++{
++    ngx_str_t                          *value = cf->args->elts;
++    ngx_http_upstream_fair_srv_conf_t  *faircf;
++    ssize_t                             min_servers;
++
++    faircf = ngx_http_conf_get_module_srv_conf(cf,
++                                               ngx_http_upstream_fair_module);
++
++    if (faircf->min_servers != 0) {
++        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
++                           "fair_min_servers already set to \"%ui\"",
++                           faircf->min_servers);
++
++        return NGX_CONF_ERROR;
++    }
++
++    min_servers = ngx_parse_size(&value[1]);
++
++    if (min_servers == NGX_ERROR) {
++        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
++                           "fair_min_servers value must be a number");
++
++        return NGX_CONF_ERROR;
++    }
++
++    faircf->min_servers = (ngx_uint_t) min_servers;
++
++    return NGX_CONF_OK;
++}
++
++static char *
+ ngx_http_upstream_fair(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+ {
+     ngx_http_upstream_srv_conf_t  *uscf;
+@@ -474,6 +592,7 @@ ngx_http_upstream_init_fair_rr(ngx_conf_t *cf, ngx_htt
+                 peers->peer[n].fail_timeout = server[i].fail_timeout;
+                 peers->peer[n].down = server[i].down;
+                 peers->peer[n].weight = server[i].down ? 0 : server[i].weight;
++                peers->peer[n].onumber = i;
+                 n++;
+             }
+         }
+@@ -524,6 +643,7 @@ ngx_http_upstream_init_fair_rr(ngx_conf_t *cf, ngx_htt
+                 backup->peer[n].max_fails = server[i].max_fails;
+                 backup->peer[n].fail_timeout = server[i].fail_timeout;
+                 backup->peer[n].down = server[i].down;
++                backup->peer[n].onumber = i;
+                 n++;
+             }
+         }
+@@ -580,6 +700,7 @@ ngx_http_upstream_init_fair_rr(ngx_conf_t *cf, ngx_htt
+         peers->peer[i].weight = 1;
+         peers->peer[i].max_fails = 1;
+         peers->peer[i].fail_timeout = 10;
++        peers->peer[i].onumber = 0;
+     }
+ 
+     us->peer.data = peers;
+@@ -589,6 +710,85 @@ ngx_http_upstream_init_fair_rr(ngx_conf_t *cf, ngx_htt
+     return NGX_OK;
+ }
+ 
++ngx_int_t
++ngx_http_upstream_fair_stop_checker(ngx_http_upstream_srv_conf_t *uscf,
++    ngx_uint_t backend)
++{
++    ngx_http_upstream_fair_peers_t  *peers;
++    ngx_atomic_t                    *lock;
++    ngx_uint_t                       i;
++
++    peers = uscf->peer.data;
++    lock = &peers->shared->lock;
++    ngx_spinlock(lock, ngx_pid, 1024);
++
++    for (i = 0; i < peers->number; i++) {
++        if (peers->peer[i].onumber == backend) {
++            if (peers->peer[i].shared->nreq > 0) {
++                ngx_spinlock_unlock(lock);
++                return NGX_DECLINED;
++            }
++        }
++    }
++
++    ngx_spinlock_unlock(lock);
++    return NGX_OK;
++}
++
++void
++ngx_http_upstream_fair_backend_monitor(ngx_http_upstream_srv_conf_t *uscf,
++    ngx_uint_t backend, ngx_uint_t new_status)
++{
++    ngx_http_upstream_fair_peers_t  *peers;
++    ngx_uint_t                       i;
++
++    peers = uscf->peer.data;
++    for (i = 0; i < peers->number; i++) {
++        if (peers->peer[i].onumber == backend) {
++            peers->peer[i].down = (new_status == NGX_SUPERVISORD_SRV_UP)
++                                ? 0 : 1;
++        }
++    }
++}
++
++void
++ngx_http_upstream_fair_load_monitor(ngx_http_upstream_srv_conf_t *uscf,
++    ngx_supervisord_load_t report)
++{
++    ngx_http_upstream_fair_srv_conf_t  *faircf;
++
++    faircf = ngx_http_conf_upstream_srv_conf(uscf,
++                                             ngx_http_upstream_fair_module);
++
++    if ((report.load > faircf->load_threshold
++                     * NGX_SUPERVISORD_LOAD_MULTIPLIER)
++        && (report.aservers < report.nservers))
++    {
++        (void) ngx_supervisord_execute(uscf, NGX_SUPERVISORD_CMD_START, -1,
++                                       NULL);
++        return;
++    }
++
++    if (report.aservers <= faircf->min_servers) {
++        return;
++    }
++
++    if ((report.reqs == 0) && (report.aservers != 0)) {
++        (void) ngx_supervisord_execute(uscf, NGX_SUPERVISORD_CMD_STOP, -1,
++                                       ngx_http_upstream_fair_stop_checker);
++        return;
++    }
++
++    if ((report.load < faircf->load_threshold
++                     * NGX_SUPERVISORD_LOAD_MULTIPLIER * 4 / 10)
++        && (report.aservers > 1))
++    {
++        (void) ngx_supervisord_execute(uscf, NGX_SUPERVISORD_CMD_STOP, -1,
++                                       ngx_http_upstream_fair_stop_checker);
++        return;
++    }
++}
++
+ static ngx_int_t
+ ngx_http_upstream_init_fair(ngx_conf_t *cf, ngx_http_upstream_srv_conf_t *us)
+ {
+@@ -601,6 +801,12 @@ ngx_http_upstream_init_fair(ngx_conf_t *cf, ngx_http_u
+         return NGX_ERROR;
+     }
+ 
++    ngx_supervisord_add_backend_monitor(us,
++        ngx_http_upstream_fair_backend_monitor);
++
++    ngx_supervisord_add_load_monitor(us,
++        ngx_http_upstream_fair_load_monitor);
++
+     /* setup our wrapper around rr */
+     peers = ngx_palloc(cf->pool, sizeof *peers);
+     if (peers == NULL) {
+@@ -1147,7 +1353,7 @@ ngx_http_upstream_init_fair_peer(ngx_http_request_t *r
+                                ngx_http_upstream_fair_save_session;
+ #endif
+ 
+-    return NGX_OK;
++    return ngx_supervisord_check_servers(r);
+ }
+ 
+ #if (NGX_HTTP_SSL)

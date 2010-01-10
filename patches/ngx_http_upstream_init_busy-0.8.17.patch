@@ -1,0 +1,72 @@
+Copyright 2008, 2009 Engine Yard, Inc. All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to
+deal in the Software without restriction, including without limitation the
+rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+sell copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+IN THE SOFTWARE.
+
+diff -Naur ../nginx-0.8.0/src/http/ngx_http_upstream.c ./src/http/ngx_http_upstream.c
+--- ../nginx-0.8.0/src/http/ngx_http_upstream.c	2009-06-02 18:09:44.000000000 +0200
++++ ./src/http/ngx_http_upstream.c	2009-06-05 09:46:09.000000000 +0200
+@@ -24,8 +24,6 @@
+ static void ngx_http_upstream_wr_check_broken_connection(ngx_http_request_t *r);
+ static void ngx_http_upstream_check_broken_connection(ngx_http_request_t *r,
+     ngx_event_t *ev);
+-static void ngx_http_upstream_connect(ngx_http_request_t *r,
+-    ngx_http_upstream_t *u);
+ static ngx_int_t ngx_http_upstream_reinit(ngx_http_request_t *r,
+     ngx_http_upstream_t *u);
+ static void ngx_http_upstream_send_request(ngx_http_request_t *r,
+@@ -598,13 +599,12 @@
+ 
+ found:
+ 
+-    if (uscf->peer.init(r, uscf) != NGX_OK) {
+-        ngx_http_upstream_finalize_request(r, u,
+-                                           NGX_HTTP_INTERNAL_SERVER_ERROR);
+-        return;
++    switch(uscf->peer.init(r, uscf)) {
++      case NGX_OK:   ngx_http_upstream_connect(r, u);
++      case NGX_BUSY: return;
+     }
+-
+-    ngx_http_upstream_connect(r, u);
++    
++    ngx_http_upstream_finalize_request(r, u, NGX_HTTP_INTERNAL_SERVER_ERROR);
+ }
+ 
+ 
+@@ -1023,7 +1024,7 @@
+ }
+ 
+ 
+-static void
++void
+ ngx_http_upstream_connect(ngx_http_request_t *r, ngx_http_upstream_t *u)
+ {
+     ngx_int_t          rc;
+diff -Naur ../nginx-0.8.0/src/http/ngx_http_upstream.h ./src/http/ngx_http_upstream.h
+--- ../nginx-0.8.0/src/http/ngx_http_upstream.h	2009-05-19 15:27:27.000000000 +0200
++++ ./src/http/ngx_http_upstream.h	2009-06-05 09:46:09.000000000 +0200
+@@ -317,6 +317,8 @@
+     ngx_http_variable_value_t *v, uintptr_t data);
+ 
+ void ngx_http_upstream_init(ngx_http_request_t *r);
++#define NGX_HTTP_UPSTREAM_INIT_BUSY_PATCH_VERSION  1
++void ngx_http_upstream_connect(ngx_http_request_t *r, ngx_http_upstream_t *u);
+ ngx_http_upstream_srv_conf_t *ngx_http_upstream_add(ngx_conf_t *cf,
+     ngx_url_t *u, ngx_uint_t flags);
+ ngx_int_t ngx_http_upstream_hide_headers_hash(ngx_conf_t *cf,

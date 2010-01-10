@@ -1,0 +1,96 @@
+ABOUT:
+------
+ngx_supervisord is a module that provides API to communicate with
+supervisord daemon (http://supervisord.org).
+
+Interface is described in ngx_supervisord.h. For example of implementation
+please check patches/ngx_http_upstream_fair_module.patch.
+
+
+SPONSORS:
+---------
+ngx_supervisord-1.0 was fully funded by megiteam.pl.
+
+
+REQUIREMENTS:
+-------------
+* nginx >= 0.8.11,
+* ngx_http_upstream_init_busy patch by Ryan Lienhart Dahl (included in patches).
+* ngx_supervisord-aware module(s).
+
+
+INCLUDED PATCHES:
+-----------------
+ngx_http_upstream_fair_module.patch:
+Patch against nginx-upstream-fair load balancer by Grzegorz Nosek
+(http://github.com/gnosek/nginx-upstream-fair), which adds capabilities to:
+* start first backend,
+* start/stop backends depending on the load,
+* set number of minimum running backends.
+
+ngx_http_upstream_init_busy-0.8.0.patch:
+Patch against nginx versions 0.8.0-0.8.16 (by Ryan Lienhart Dahl),
+which adds ability to stop/resume request processing.
+
+ngx_http_upstream_init_busy-0.8.17.patch:
+Same as above, for versions 0.8.17-0.8.21.
+
+
+INSTALLATION (with patched nginx-upstream-fair, versions ommited):
+------------------------------------------------------------------
+// unpack releases
+$ tar -zxf nginx.tar.gz
+$ tar -zxf ngx_supervisord.tar.gz
+$ tar -zxf gnosek-nginx-upstream-fair.tar.gz
+
+// patch gnosek-nginx-upstream-fair
+$ cp ngx_supervisord/patches/ngx_http_upstream_fair_module.patch
+     gnosek-nginx-upstream-fair/
+$ cd gnosek-nginx-upstream-fair; patch -p0 < ngx_http_upstream_fair_module.patch
+
+// patch nginx
+$ cp ngx_supervisord/patches/ngx_http_upstream_init_busy.patch nginx/
+$ cd nginx
+$ patch -p0 < ngx_http_upstream_init_busy.patch
+
+// build
+$ ./configure --add-module=/path/to/ngx_supervisord
+  --add-module=/path/to/gnosek-nginx-upstream-fair
+$ make && make install
+
+
+CONFIGURATION DIRECTIVES:
+-------------------------
+supervisord path [user:pass] (context: upstream)
+
+path can be:
+* IP:port (127.0.0.1:8000)
+* UNIX socket path (unix:/path/to/supervisord.sock)
+
+
+EXAMPLE CONFIGURATION:
+----------------------
+upstream backend {
+    server 127.0.0.1:8000;
+    server 127.0.0.1:8001;
+    supervisord 127.0.0.1:9001 admin:super;
+    fair;
+}
+
+server {
+    location / {
+        proxy_pass http://backend;
+    }
+}
+
+With such configuration, ngx_supervisord will be starting/stopping
+[program:backend0] (which should be listening on 127.0.0.1:8000)
+and [program:backend1] (which should be listening on 127.0.0.1:8001)
+from supervisord's configuration.
+
+
+CREDITS:
+--------
+* Magda Zarych (megiteam.pl),
+* Grzegorz Nosek (megiteam.pl),
+* Ryan Lienhart Dahl.
