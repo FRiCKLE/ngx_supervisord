@@ -1,5 +1,5 @@
---- ngx_http_upstream_fair_module.c.orig	Thu Nov 19 03:36:25 2009
-+++ ngx_http_upstream_fair_module.c	Thu Nov 19 03:37:42 2009
+--- ngx_http_upstream_fair_module.c.orig	Wed Sep 23 17:38:16 2009
++++ ngx_http_upstream_fair_module.c	Thu Apr 29 04:36:07 2010
 @@ -8,8 +8,18 @@
  #include <ngx_config.h>
  #include <ngx_core.h>
@@ -27,7 +27,15 @@
  
      ngx_uint_t                          weight;
      ngx_uint_t                          max_fails;
-@@ -97,6 +108,12 @@
+@@ -74,6 +85,7 @@
+ #define NGX_PEER_INVALID (~0UL)
+ 
+ typedef struct {
++    ngx_http_upstream_srv_conf_t       *uscf;
+     ngx_http_upstream_fair_peers_t     *peers;
+     ngx_uint_t                          current;
+     uintptr_t                          *tried;
+@@ -97,6 +109,12 @@
      ngx_command_t *cmd, void *conf);
  static ngx_int_t ngx_http_upstream_fair_init_module(ngx_cycle_t *cycle);
  
@@ -40,7 +48,7 @@
  #if (NGX_HTTP_EXTENDED_STATUS)
  static ngx_chain_t *ngx_http_upstream_fair_report_status(ngx_http_request_t *r,
      ngx_int_t *length);
-@@ -125,6 +142,20 @@
+@@ -125,6 +143,20 @@
        0,
        NULL },
  
@@ -61,7 +69,7 @@
        ngx_null_command
  };
  
-@@ -136,7 +167,7 @@
+@@ -136,7 +168,7 @@
      NULL,                                  /* create main configuration */
      NULL,                                  /* init main configuration */
  
@@ -70,7 +78,7 @@
      NULL,                                  /* merge server configuration */
  
      NULL,                                  /* create location configuration */
-@@ -371,8 +402,95 @@
+@@ -371,8 +403,95 @@
      return NGX_CONF_OK;
  }
  
@@ -166,7 +174,7 @@
  ngx_http_upstream_fair(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
  {
      ngx_http_upstream_srv_conf_t  *uscf;
-@@ -474,6 +592,7 @@
+@@ -474,6 +593,7 @@
                  peers->peer[n].fail_timeout = server[i].fail_timeout;
                  peers->peer[n].down = server[i].down;
                  peers->peer[n].weight = server[i].down ? 0 : server[i].weight;
@@ -174,7 +182,7 @@
                  n++;
              }
          }
-@@ -524,6 +643,7 @@
+@@ -524,6 +644,7 @@
                  backup->peer[n].max_fails = server[i].max_fails;
                  backup->peer[n].fail_timeout = server[i].fail_timeout;
                  backup->peer[n].down = server[i].down;
@@ -182,7 +190,7 @@
                  n++;
              }
          }
-@@ -580,6 +700,7 @@
+@@ -580,6 +701,7 @@
          peers->peer[i].weight = 1;
          peers->peer[i].max_fails = 1;
          peers->peer[i].fail_timeout = 10;
@@ -190,7 +198,7 @@
      }
  
      us->peer.data = peers;
-@@ -589,6 +710,89 @@
+@@ -589,6 +711,89 @@
      return NGX_OK;
  }
  
@@ -280,7 +288,7 @@
  static ngx_int_t
  ngx_http_upstream_init_fair(ngx_conf_t *cf, ngx_http_upstream_srv_conf_t *us)
  {
-@@ -601,6 +805,12 @@
+@@ -601,6 +806,12 @@
          return NGX_ERROR;
      }
  
@@ -293,7 +301,26 @@
      /* setup our wrapper around rr */
      peers = ngx_palloc(cf->pool, sizeof *peers);
      if (peers == NULL) {
-@@ -1147,7 +1357,7 @@
+@@ -976,6 +1187,10 @@
+ 
+         peer->shared->fails++;
+         peer->accessed = ngx_time();
++
++        peer->shared->fails = 0;
++        (void) ngx_supervisord_execute(fp->uscf, NGX_SUPERVISORD_CMD_STOP,
++                                       peer->onumber, NULL);
+     }
+     ngx_spinlock_unlock(lock);
+ }
+@@ -1119,6 +1334,7 @@
+ 
+     usfp = us->peer.data;
+ 
++    fp->uscf = us;
+     fp->tried = ngx_bitvector_alloc(r->pool, usfp->number, &fp->data);
+     fp->done = ngx_bitvector_alloc(r->pool, usfp->number, &fp->data2);
+ 
+@@ -1147,7 +1363,7 @@
                                 ngx_http_upstream_fair_save_session;
  #endif
  

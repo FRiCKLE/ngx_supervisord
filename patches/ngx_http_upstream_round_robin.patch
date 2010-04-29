@@ -125,6 +125,14 @@
  
  
  ngx_int_t
+@@ -216,6 +266,7 @@
+         r->upstream->peer.data = rrp;
+     }
+
++    rrp->uscf = us;
+     rrp->peers = us->peer.data;
+     rrp->current = 0;
+
 @@ -243,7 +293,7 @@
                                 ngx_http_upstream_save_round_robin_peer_session;
  #endif
@@ -146,11 +154,22 @@
 +        }
 +
 +        if (i == rrp->peers->number) {
-+             return NGX_BUSY;
++             goto failed;
 +        }
  
          if (pc->tries == rrp->peers->number) {
  
+@@ -668,6 +729,10 @@
+         if (peer->current_weight < 0) {
+             peer->current_weight = 0;
+         }
++
++        peer->fails = 0;
++        (void) ngx_supervisord_execute(rrp->uscf, NGX_SUPERVISORD_CMD_STOP,
++                                       peer->onumber, NULL);
+ 
+         /* ngx_unlock_mutex(rrp->peers->mutex); */
+     }
 --- src/http/ngx_http_upstream_round_robin.h.orig	Mon Jan  4 05:27:00 2010
 +++ src/http/ngx_http_upstream_round_robin.h	Mon Jan  4 05:27:05 2010
 @@ -17,9 +17,11 @@
@@ -165,3 +184,11 @@
  
      ngx_uint_t                      fails;
      time_t                          accessed;
+@@ -54,6 +56,7 @@
+ 
+ 
+ typedef struct {
++    ngx_http_upstream_srv_conf_t   *uscf;
+     ngx_http_upstream_rr_peers_t   *peers;
+     ngx_uint_t                      current;
+     uintptr_t                      *tried;

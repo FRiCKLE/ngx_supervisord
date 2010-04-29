@@ -1,3 +1,9 @@
+2010-04-29    VERSION 1.4
+    * Send shutdown command to supervisord on backend failure
+      and try to bring back first backend after all backends fail.
+      This is default and non-configurable behavior.
+      Requested by Grzegorz Nosek.
+
 2010-01-04    VERSION 1.3
     * Add "supervisord_inherit_backend_status" directive.
 
