@@ -32,11 +32,11 @@ Patch against nginx-upstream-fair load balancer by Grzegorz Nosek
 * set number of minimum running backend servers.
 
 ngx_http_upstream_init_busy-0.8.0.patch:
-Patch against nginx versions 0.8.0-0.8.16 (by Ryan Lienhart Dahl),
+Patch (by Ryan Lienhart Dahl) against nginx versions 0.7.65+ and 0.8.0-0.8.16
 which adds ability to stop/resume request processing.
 
 ngx_http_upstream_init_busy-0.8.17.patch:
-Same as above, for versions 0.8.17-0.8.21.
+Same as above, for versions 0.8.17+ (last tested version is 0.8.42).
 
 ngx_http_upstream_round_robin.patch:
 Patch against bulit-in load balancer, which adds ability to control
